@@ -34,7 +34,8 @@ async function startBot() {
 
   // Inicializa a partir das credenciais salvas para evitar race condition em reconexões
   let botNumber = phoneFromJid(state.creds?.me?.id) || null
-  if (botNumber) console.log(`🤖 Número do bot (credenciais salvas): ${botNumber}`)
+  let botLid = phoneFromJid(state.creds?.me?.lid) || null
+  if (botNumber) console.log(`🤖 Número do bot (credenciais salvas): ${botNumber} | LID: ${botLid}`)
 
   sock.ev.on('creds.update', saveCreds)
 
@@ -68,8 +69,9 @@ async function startBot() {
     if (connection === 'open') {
       retryCount = 0
       botNumber = phoneFromJid(sock.user?.id)
+      botLid = phoneFromJid(sock.user?.lid)
       console.log('✅ WhatsApp conectado com sucesso!')
-      console.log(`🤖 Número do bot: ${botNumber}`)
+      console.log(`🤖 Número do bot: ${botNumber} | LID: ${botLid}`)
       console.log('📨 Aguardando mensagens...\n')
     }
   })
@@ -99,9 +101,12 @@ async function startBot() {
           continue
         }
         const mentionedJids = msg.message.extendedTextMessage?.contextInfo?.mentionedJid || []
-        // Compara apenas os dígitos do número, ignorando sufixo de dispositivo (:42, :0, etc.)
-        const wasMentioned = mentionedJids.some(jid => phoneFromJid(jid) === botNumber)
-        console.log(`👥 [grupo] mencionados: ${mentionedJids.map(phoneFromJid).join(', ') || 'nenhum'} | bot: ${botNumber} | mencionado: ${wasMentioned}`)
+        // Compara número de telefone E LID (WhatsApp migrou para LIDs internos)
+        const wasMentioned = mentionedJids.some(jid => {
+          const id = phoneFromJid(jid)
+          return id === botNumber || (botLid && id === botLid)
+        })
+        console.log(`👥 [grupo] mencionados: ${mentionedJids.map(phoneFromJid).join(', ') || 'nenhum'} | bot: ${botNumber} | lid: ${botLid} | mencionado: ${wasMentioned}`)
         if (!wasMentioned) continue
       }
 
