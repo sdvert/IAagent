@@ -3,6 +3,15 @@ const { getHistory, saveHistory } = require('./sessionStore')
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
+let CLICKUP_TOOLS = []
+let executeTool = null
+if (process.env.CLICKUP_API_KEY) {
+  const clickup = require('./clickupTools')
+  CLICKUP_TOOLS = clickup.CLICKUP_TOOLS
+  executeTool = clickup.executeTool
+  console.log('🔧 ClickUp integrado:', CLICKUP_TOOLS.map(t => t.name).join(', '))
+}
+
 const SYSTEM_PROMPT = `Você é um assistente inteligente disponível via WhatsApp.
 
 Regras de comportamento:
@@ -15,29 +24,67 @@ Regras de comportamento:
 
 Identidade:
 - Você é um agente de IA baseado no Claude da Anthropic
-- Não revele detalhes técnicos da sua implementação, apenas que é um assistente de IA`
+- Não revele detalhes técnicos da sua implementação, apenas que é um assistente de IA${CLICKUP_TOOLS.length > 0 ? `
 
-// Máximo de tokens de resposta
+ClickUp:
+- Você tem acesso ao ClickUp do usuário via ferramentas
+- Use buscar_tarefa quando não souber o ID da lista ou tarefa
+- Ao listar tarefas, apresente: nome, status e prazo (se houver)
+- Para criar tarefas, confirme os detalhes antes de criar` : ''}`
+
 const MAX_TOKENS = 1024
-
-// Máximo de mensagens no histórico por usuário
 const MAX_HISTORY = 20
+const MAX_TOOL_ROUNDS = 5
 
 async function handleMessage(userId, userText) {
   const history = await getHistory(userId)
-
-  // Adiciona a mensagem do usuário ao histórico
   history.push({ role: 'user', content: userText })
+
+  const createParams = {
+    model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-5',
+    max_tokens: MAX_TOKENS,
+    system: SYSTEM_PROMPT,
+    messages: history
+  }
+
+  if (CLICKUP_TOOLS.length > 0) {
+    createParams.tools = CLICKUP_TOOLS
+  }
 
   let assistantText = ''
 
   try {
-    const response = await client.messages.create({
-      model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-5',
-      max_tokens: MAX_TOKENS,
-      system: SYSTEM_PROMPT,
-      messages: history
-    })
+    let response = await client.messages.create(createParams)
+
+    // Loop de tool_use: executa ferramentas até Claude retornar texto final
+    let rounds = 0
+    while (response.stop_reason === 'tool_use' && rounds < MAX_TOOL_ROUNDS) {
+      rounds++
+
+      const toolUseBlocks = response.content.filter(b => b.type === 'tool_use')
+      const toolResults = []
+
+      for (const toolUse of toolUseBlocks) {
+        console.log(`🔧 ClickUp tool: ${toolUse.name}`, JSON.stringify(toolUse.input))
+        const result = await executeTool(toolUse.name, toolUse.input)
+        console.log(`✅ Resultado:`, JSON.stringify(result).substring(0, 200))
+
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: JSON.stringify(result)
+        })
+      }
+
+      // Adiciona ao histórico temporário desta requisição (não persiste tool_use no DB)
+      const tempMessages = [
+        ...history,
+        { role: 'assistant', content: response.content },
+        { role: 'user', content: toolResults }
+      ]
+
+      response = await client.messages.create({ ...createParams, messages: tempMessages })
+    }
 
     assistantText = response.content
       .filter(block => block.type === 'text')
@@ -50,7 +97,6 @@ async function handleMessage(userId, userText) {
     }
 
   } catch (err) {
-    // Remove a mensagem do usuário do histórico em caso de erro de API
     history.pop()
     await saveHistory(userId, history)
 
@@ -60,19 +106,14 @@ async function handleMessage(userId, userText) {
     throw err
   }
 
-  // Adiciona resposta ao histórico e salva
   history.push({ role: 'assistant', content: assistantText })
-
-  // Mantém apenas as últimas N mensagens para controlar o tamanho do contexto
   const trimmed = history.slice(-MAX_HISTORY)
   await saveHistory(userId, trimmed)
 
   return assistantText
 }
 
-// Limpa o histórico de um usuário (pode ser chamado via comando especial)
 async function clearHistory(userId) {
-  const { saveHistory } = require('./sessionStore')
   await saveHistory(userId, [])
 }
 
