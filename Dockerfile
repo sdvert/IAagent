@@ -1,7 +1,7 @@
 FROM node:20-alpine
 
 # Dependências nativas para better-sqlite3
-RUN apk add --no-cache python3 make g++ sqlite
+RUN apk add --no-cache python3 make g++ sqlite git
 
 WORKDIR /app
 
