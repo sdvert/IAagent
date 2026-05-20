@@ -27,6 +27,8 @@ async function startBot() {
     defaultQueryTimeoutMs: 60000
   })
 
+  let botNumber = null
+
   sock.ev.on('creds.update', saveCreds)
 
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
@@ -58,7 +60,9 @@ async function startBot() {
 
     if (connection === 'open') {
       retryCount = 0
+      botNumber = sock.user?.id?.split(':')[0] || sock.user?.id?.split('@')[0]
       console.log('✅ WhatsApp conectado com sucesso!')
+      console.log(`🤖 Número do bot: ${botNumber}`)
       console.log('📨 Aguardando mensagens...\n')
     }
   })
@@ -67,12 +71,12 @@ async function startBot() {
     if (type !== 'notify') return
 
     for (const msg of messages) {
-      // Ignora mensagens próprias, de grupo e sem texto
       if (msg.key.fromMe) continue
-      if (msg.key.remoteJid.endsWith('@g.us')) continue
       if (!msg.message) continue
 
       const from = msg.key.remoteJid
+      const isGroup = from.endsWith('@g.us')
+
       const text =
         msg.message.conversation ||
         msg.message.extendedTextMessage?.text ||
@@ -81,18 +85,42 @@ async function startBot() {
 
       if (!text) continue
 
-      const contact = from.replace('@s.whatsapp.net', '')
-      console.log(`📩 [${contact}]: ${text}`)
+      // Em grupos: só responde se o bot foi mencionado
+      if (isGroup) {
+        const mentionedJids = msg.message.extendedTextMessage?.contextInfo?.mentionedJid || []
+        const botJid = botNumber ? `${botNumber}@s.whatsapp.net` : null
+        const wasMentioned = botJid && mentionedJids.includes(botJid)
+        if (!wasMentioned) continue
+      }
 
-      // Envia "digitando..."
+      // Usa o JID do grupo como chave de sessão para manter contexto separado por grupo/privado
+      const sessionId = from
+      const sender = isGroup ? msg.key.participant : from
+      const contact = (isGroup ? from : from).replace(/@.+/, '')
+      const label = isGroup ? `grupo:${contact}` : contact
+
+      console.log(`📩 [${label}]: ${text}`)
+
       await sock.sendPresenceUpdate('composing', from)
 
       try {
-        const response = await handleMessage(from, text)
-        await sock.sendMessage(from, { text: response })
-        console.log(`📤 [${contact}]: ${response.substring(0, 80)}...`)
+        // Remove a menção (@número) do texto antes de enviar ao Claude
+        const cleanText = text.replace(/@\d+/g, '').trim()
+        const response = await handleMessage(sessionId, cleanText)
+
+        // Em grupos: responde mencionando quem enviou
+        if (isGroup && sender) {
+          await sock.sendMessage(from, {
+            text: response,
+            mentions: [sender]
+          })
+        } else {
+          await sock.sendMessage(from, { text: response })
+        }
+
+        console.log(`📤 [${label}]: ${response.substring(0, 80)}...`)
       } catch (err) {
-        console.error(`❌ Erro ao processar mensagem de ${contact}:`, err.message)
+        console.error(`❌ Erro ao processar mensagem de ${label}:`, err.message)
         await sock.sendMessage(from, {
           text: '⚠️ Ocorreu um erro ao processar sua mensagem. Tente novamente.'
         })
