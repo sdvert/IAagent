@@ -11,6 +11,11 @@ const { handleMessage } = require('./claudeAgent')
 let retryCount = 0
 const MAX_RETRIES = 5
 
+// Extrai apenas os dígitos do número de um JID (ex: "5511999:42@s.whatsapp.net" → "5511999")
+function phoneFromJid(jid) {
+  return jid?.split('@')[0]?.split(':')[0] || null
+}
+
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('./auth_info')
   const { version } = await fetchLatestBaileysVersion()
@@ -27,7 +32,9 @@ async function startBot() {
     defaultQueryTimeoutMs: 60000
   })
 
-  let botNumber = null
+  // Inicializa a partir das credenciais salvas para evitar race condition em reconexões
+  let botNumber = phoneFromJid(state.creds?.me?.id) || null
+  if (botNumber) console.log(`🤖 Número do bot (credenciais salvas): ${botNumber}`)
 
   sock.ev.on('creds.update', saveCreds)
 
@@ -60,7 +67,7 @@ async function startBot() {
 
     if (connection === 'open') {
       retryCount = 0
-      botNumber = sock.user?.id?.split(':')[0] || sock.user?.id?.split('@')[0]
+      botNumber = phoneFromJid(sock.user?.id)
       console.log('✅ WhatsApp conectado com sucesso!')
       console.log(`🤖 Número do bot: ${botNumber}`)
       console.log('📨 Aguardando mensagens...\n')
@@ -87,9 +94,14 @@ async function startBot() {
 
       // Em grupos: só responde se o bot foi mencionado
       if (isGroup) {
+        if (!botNumber) {
+          console.log(`⚠️  [grupo] botNumber ainda não definido, ignorando mensagem`)
+          continue
+        }
         const mentionedJids = msg.message.extendedTextMessage?.contextInfo?.mentionedJid || []
-        const botJid = botNumber ? `${botNumber}@s.whatsapp.net` : null
-        const wasMentioned = botJid && mentionedJids.includes(botJid)
+        // Compara apenas os dígitos do número, ignorando sufixo de dispositivo (:42, :0, etc.)
+        const wasMentioned = mentionedJids.some(jid => phoneFromJid(jid) === botNumber)
+        console.log(`👥 [grupo] mencionados: ${mentionedJids.map(phoneFromJid).join(', ') || 'nenhum'} | bot: ${botNumber} | mencionado: ${wasMentioned}`)
         if (!wasMentioned) continue
       }
 
