@@ -26,13 +26,12 @@ function phoneFromJid(jid) {
 }
 
 // Envia mensagem com até 3 tentativas — necessário porque após renovação de sessão
-// Signal (prekey bundle) o sendMessage pode falhar silenciosamente na 1ª tentativa
+// Signal (prekey bundle) o sendMessage pode falhar na 1ª tentativa
 async function sendWithRetry(sock, from, message, label) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const result = await sock.sendMessage(from, message)
-      if (result?.key?.id) return result
-      throw new Error('sem ID de mensagem retornado')
+      await sock.sendMessage(from, message)
+      return
     } catch (err) {
       if (attempt === 3) throw err
       console.log(`⚠️ [${label}] Envio falhou (tentativa ${attempt}/3): ${err.message} — aguardando 2s`)
