@@ -25,21 +25,6 @@ function phoneFromJid(jid) {
   return jid?.split('@')[0]?.split(':')[0] || null
 }
 
-// Envia mensagem com até 3 tentativas — necessário porque após renovação de sessão
-// Signal (prekey bundle) o sendMessage pode falhar na 1ª tentativa
-async function sendWithRetry(sock, from, message, label) {
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      await sock.sendMessage(from, message)
-      return
-    } catch (err) {
-      if (attempt === 3) throw err
-      console.log(`⚠️ [${label}] Envio falhou (tentativa ${attempt}/3): ${err.message} — aguardando 2s`)
-      await new Promise(r => setTimeout(r, 2000))
-    }
-  }
-}
-
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('./auth_info')
   const { version } = await fetchLatestBaileysVersion()
@@ -151,17 +136,17 @@ async function startBot() {
 
         // Em grupos: responde mencionando quem enviou
         if (isGroup && sender) {
-          await sendWithRetry(sock, from, { text: response, mentions: [sender] }, label)
+          await sock.sendMessage(from, { text: response, mentions: [sender] })
         } else {
-          await sendWithRetry(sock, from, { text: response }, label)
+          await sock.sendMessage(from, { text: response })
         }
 
         console.log(`📤 [${label}]: ${response.substring(0, 80)}...`)
       } catch (err) {
         console.error(`❌ Erro ao processar mensagem de ${label}:`, err.message)
-        await sendWithRetry(sock, from, {
+        await sock.sendMessage(from, {
           text: '⚠️ Ocorreu um erro ao processar sua mensagem. Tente novamente.'
-        }, label).catch(() => {})
+        })
       } finally {
         await sock.sendPresenceUpdate('paused', from)
       }
