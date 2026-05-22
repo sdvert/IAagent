@@ -8,8 +8,7 @@ const pino = require('pino')
 const qrcode = require('qrcode-terminal')
 const { handleMessage } = require('./claudeAgent')
 
-// Suprime logs internos do protocolo Signal do Baileys (usam console.log diretamente,
-// bypassam o pino logger) e expõem dados criptográficos sensíveis como chaves privadas
+// Suprime logs internos do protocolo Signal do Baileys que expõem chaves privadas
 const _origLog = console.log
 console.log = (...args) => {
   const msg = String(args[0] ?? '')
@@ -41,7 +40,6 @@ async function startBot() {
     defaultQueryTimeoutMs: 60000
   })
 
-  // Inicializa a partir das credenciais salvas para evitar race condition em reconexões
   let botNumber = phoneFromJid(state.creds?.me?.id) || null
   let botLid = phoneFromJid(state.creds?.me?.lid) || null
   if (botNumber) console.log(`🤖 Número do bot (credenciais salvas): ${botNumber} | LID: ${botLid}`)
@@ -110,7 +108,6 @@ async function startBot() {
           continue
         }
         const mentionedJids = msg.message.extendedTextMessage?.contextInfo?.mentionedJid || []
-        // Compara número de telefone E LID (WhatsApp migrou para LIDs internos)
         const wasMentioned = mentionedJids.some(jid => {
           const id = phoneFromJid(jid)
           return id === botNumber || (botLid && id === botLid)
@@ -119,22 +116,26 @@ async function startBot() {
         if (!wasMentioned) continue
       }
 
-      // Usa o JID do grupo como chave de sessão para manter contexto separado por grupo/privado
       const sessionId = from
       const sender = isGroup ? msg.key.participant : from
-      const contact = (isGroup ? from : from).replace(/@.+/, '')
+      const contact = from.replace(/@.+/, '')
       const label = isGroup ? `grupo:${contact}` : contact
 
       console.log(`📩 [${label}]: ${text}`)
 
-      await sock.sendPresenceUpdate('composing', from)
+      try {
+        await sock.sendPresenceUpdate('composing', from)
+      } catch (e) {
+        console.error(`⚠️ [${label}] sendPresenceUpdate falhou:`, e.message)
+      }
 
       try {
-        // Remove a menção (@número) do texto antes de enviar ao Claude
         const cleanText = text.replace(/@\d+/g, '').trim()
-        const response = await handleMessage(sessionId, cleanText)
 
-        // Em grupos: responde mencionando quem enviou
+        console.log(`⏳ [${label}] processando com Claude...`)
+        const response = await handleMessage(sessionId, cleanText)
+        console.log(`✅ [${label}] Claude respondeu (${response.length} chars)`)
+
         if (isGroup && sender) {
           await sock.sendMessage(from, { text: response, mentions: [sender] })
         } else {
@@ -143,12 +144,18 @@ async function startBot() {
 
         console.log(`📤 [${label}]: ${response.substring(0, 80)}...`)
       } catch (err) {
-        console.error(`❌ Erro ao processar mensagem de ${label}:`, err.message)
-        await sock.sendMessage(from, {
-          text: '⚠️ Ocorreu um erro ao processar sua mensagem. Tente novamente.'
-        })
+        console.error(`❌ [${label}] Erro:`, err.message, err.stack?.split('\n')[1] || '')
+        try {
+          await sock.sendMessage(from, {
+            text: '⚠️ Ocorreu um erro ao processar sua mensagem. Tente novamente.'
+          })
+        } catch (e2) {
+          console.error(`❌ [${label}] sendMessage de erro também falhou:`, e2.message)
+        }
       } finally {
-        await sock.sendPresenceUpdate('paused', from)
+        try {
+          await sock.sendPresenceUpdate('paused', from)
+        } catch (e) {}
       }
     }
   })
