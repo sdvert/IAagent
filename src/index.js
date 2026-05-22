@@ -8,21 +8,8 @@ const pino = require('pino')
 const qrcode = require('qrcode-terminal')
 const { handleMessage } = require('./claudeAgent')
 
-// Suprime logs internos do protocolo Signal do Baileys que expõem chaves privadas
-const _origLog = console.log
-console.log = (...args) => {
-  const msg = String(args[0] ?? '')
-  if (msg.includes('Closing open session') || msg.includes('Closing session:')) return
-  _origLog(...args)
-}
-
 let retryCount = 0
 const MAX_RETRIES = 5
-
-// Extrai apenas os dígitos do número de um JID (ex: "5511999:42@s.whatsapp.net" → "5511999")
-function phoneFromJid(jid) {
-  return jid?.split('@')[0]?.split(':')[0] || null
-}
 
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('./auth_info')
@@ -40,9 +27,7 @@ async function startBot() {
     defaultQueryTimeoutMs: 60000
   })
 
-  let botNumber = phoneFromJid(state.creds?.me?.id) || null
-  let botLid = phoneFromJid(state.creds?.me?.lid) || null
-  if (botNumber) console.log(`🤖 Número do bot (credenciais salvas): ${botNumber} | LID: ${botLid}`)
+  let botNumber = null
 
   sock.ev.on('creds.update', saveCreds)
 
@@ -75,10 +60,9 @@ async function startBot() {
 
     if (connection === 'open') {
       retryCount = 0
-      botNumber = phoneFromJid(sock.user?.id)
-      botLid = phoneFromJid(sock.user?.lid)
+      botNumber = sock.user?.id?.split(':')[0] || sock.user?.id?.split('@')[0]
       console.log('✅ WhatsApp conectado com sucesso!')
-      console.log(`🤖 Número do bot: ${botNumber} | LID: ${botLid}`)
+      console.log(`🤖 Número do bot: ${botNumber}`)
       console.log('📨 Aguardando mensagens...\n')
     }
   })
@@ -93,6 +77,9 @@ async function startBot() {
       const from = msg.key.remoteJid
       const isGroup = from.endsWith('@g.us')
 
+      // Ignora mensagens de grupos — bot responde apenas no privado
+      if (isGroup) continue
+
       const text =
         msg.message.conversation ||
         msg.message.extendedTextMessage?.text ||
@@ -101,61 +88,26 @@ async function startBot() {
 
       if (!text) continue
 
-      // Em grupos: só responde se o bot foi mencionado
-      if (isGroup) {
-        if (!botNumber) {
-          console.log(`⚠️  [grupo] botNumber ainda não definido, ignorando mensagem`)
-          continue
-        }
-        const mentionedJids = msg.message.extendedTextMessage?.contextInfo?.mentionedJid || []
-        const wasMentioned = mentionedJids.some(jid => {
-          const id = phoneFromJid(jid)
-          return id === botNumber || (botLid && id === botLid)
-        })
-        console.log(`👥 [grupo] mencionados: ${mentionedJids.map(phoneFromJid).join(', ') || 'nenhum'} | bot: ${botNumber} | lid: ${botLid} | mencionado: ${wasMentioned}`)
-        if (!wasMentioned) continue
-      }
-
       const sessionId = from
-      const sender = isGroup ? msg.key.participant : from
       const contact = from.replace(/@.+/, '')
-      const label = isGroup ? `grupo:${contact}` : contact
 
-      console.log(`📩 [${label}]: ${text}`)
+      console.log(`📩 [${contact}]: ${text}`)
 
-      try {
-        await sock.sendPresenceUpdate('composing', from)
-      } catch (e) {
-        console.error(`⚠️ [${label}] sendPresenceUpdate falhou:`, e.message)
-      }
+      await sock.sendPresenceUpdate('composing', from)
 
       try {
-        const cleanText = text.replace(/@\d+/g, '').trim()
+        const response = await handleMessage(sessionId, text)
 
-        console.log(`⏳ [${label}] processando com Claude...`)
-        const response = await handleMessage(sessionId, cleanText)
-        console.log(`✅ [${label}] Claude respondeu (${response.length} chars)`)
+        await sock.sendMessage(from, { text: response })
 
-        if (isGroup && sender) {
-          await sock.sendMessage(from, { text: response, mentions: [sender] })
-        } else {
-          await sock.sendMessage(from, { text: response })
-        }
-
-        console.log(`📤 [${label}]: ${response.substring(0, 80)}...`)
+        console.log(`📤 [${contact}]: ${response.substring(0, 80)}...`)
       } catch (err) {
-        console.error(`❌ [${label}] Erro:`, err.message, err.stack?.split('\n')[1] || '')
-        try {
-          await sock.sendMessage(from, {
-            text: '⚠️ Ocorreu um erro ao processar sua mensagem. Tente novamente.'
-          })
-        } catch (e2) {
-          console.error(`❌ [${label}] sendMessage de erro também falhou:`, e2.message)
-        }
+        console.error(`❌ Erro ao processar mensagem de ${contact}:`, err.message)
+        await sock.sendMessage(from, {
+          text: '⚠️ Ocorreu um erro ao processar sua mensagem. Tente novamente.'
+        })
       } finally {
-        try {
-          await sock.sendPresenceUpdate('paused', from)
-        } catch (e) {}
+        await sock.sendPresenceUpdate('paused', from)
       }
     }
   })
