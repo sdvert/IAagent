@@ -8,12 +8,37 @@ const pino = require('pino')
 const qrcode = require('qrcode-terminal')
 const { handleMessage } = require('./claudeAgent')
 
+// Suprime logs internos do protocolo Signal do Baileys (usam console.log diretamente,
+// bypassam o pino logger) e expõem dados criptográficos sensíveis como chaves privadas
+const _origLog = console.log
+console.log = (...args) => {
+  const msg = String(args[0] ?? '')
+  if (msg.includes('Closing open session') || msg.includes('Closing session:')) return
+  _origLog(...args)
+}
+
 let retryCount = 0
 const MAX_RETRIES = 5
 
 // Extrai apenas os dígitos do número de um JID (ex: "5511999:42@s.whatsapp.net" → "5511999")
 function phoneFromJid(jid) {
   return jid?.split('@')[0]?.split(':')[0] || null
+}
+
+// Envia mensagem com até 3 tentativas — necessário porque após renovação de sessão
+// Signal (prekey bundle) o sendMessage pode falhar silenciosamente na 1ª tentativa
+async function sendWithRetry(sock, from, message, label) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const result = await sock.sendMessage(from, message)
+      if (result?.key?.id) return result
+      throw new Error('sem ID de mensagem retornado')
+    } catch (err) {
+      if (attempt === 3) throw err
+      console.log(`⚠️ [${label}] Envio falhou (tentativa ${attempt}/3): ${err.message} — aguardando 2s`)
+      await new Promise(r => setTimeout(r, 2000))
+    }
+  }
 }
 
 async function startBot() {
@@ -127,20 +152,17 @@ async function startBot() {
 
         // Em grupos: responde mencionando quem enviou
         if (isGroup && sender) {
-          await sock.sendMessage(from, {
-            text: response,
-            mentions: [sender]
-          })
+          await sendWithRetry(sock, from, { text: response, mentions: [sender] }, label)
         } else {
-          await sock.sendMessage(from, { text: response })
+          await sendWithRetry(sock, from, { text: response }, label)
         }
 
         console.log(`📤 [${label}]: ${response.substring(0, 80)}...`)
       } catch (err) {
         console.error(`❌ Erro ao processar mensagem de ${label}:`, err.message)
-        await sock.sendMessage(from, {
+        await sendWithRetry(sock, from, {
           text: '⚠️ Ocorreu um erro ao processar sua mensagem. Tente novamente.'
-        })
+        }, label).catch(() => {})
       } finally {
         await sock.sendPresenceUpdate('paused', from)
       }

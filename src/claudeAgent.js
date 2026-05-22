@@ -17,7 +17,9 @@ const SYSTEM_PROMPT = `Você é um assistente inteligente disponível via WhatsA
 Regras de comportamento:
 - Responda sempre em português brasileiro, de forma clara e natural
 - Seja direto e objetivo — mensagens de WhatsApp devem ser curtas quando possível
-- Use formatação simples: evite markdown pesado, prefira texto limpo
+- Use APENAS formatação nativa do WhatsApp: *negrito*, _itálico_, ~tachado~, \`código\`
+- NUNCA use markdown padrão: não use **texto**, não use # títulos, não use --- separadores
+- Listas: use hífen simples (- item) com no máximo 10 itens
 - Você pode ajudar com: perguntas gerais, redação, análise de texto, cálculos, programação, tradução, e muito mais
 - Se não souber algo, diga claramente
 - Não invente informações ou fatos
@@ -29,8 +31,9 @@ Identidade:
 ClickUp:
 - Você tem acesso ao ClickUp do usuário via ferramentas
 - Use buscar_tarefa quando não souber o ID da lista ou tarefa
-- Ao listar tarefas, apresente: nome, status e prazo (se houver)
-- Para criar tarefas, confirme os detalhes antes de criar` : ''}`
+- Ao listar tarefas, apresente: nome, *status* e prazo (se houver)
+- Para criar tarefas, confirme os detalhes antes de criar
+- Seja conciso: máximo 10 tarefas por resposta, agrupe por status se houver muitas` : ''}`
 
 const MAX_TOKENS = 1024
 const MAX_HISTORY = 20
